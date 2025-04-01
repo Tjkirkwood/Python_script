@@ -22,7 +22,7 @@ video_label = tk.Label(root)
 video_label.pack()
 
 # OpenCV video capture
-cap = cv2.VideoCapture(0)
+cap = cv2.VideoCapture(0, cv2.CAP_DSHOW)
 
 def detect_emotion(frame):
     """ Detect emotion from the given frame """
