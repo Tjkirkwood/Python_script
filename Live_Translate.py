@@ -1,132 +1,122 @@
 import easyocr
 import mss
-import time
-import threading
 import numpy as np
 import cv2
 from langdetect import detect
 from googletrans import Translator
-import pyautogui
+import time
+import threading
 
+# Initialize EasyOCR (for English and Japanese in this case)
+reader = easyocr.Reader(['en', 'ja'], gpu=False)  # You can change languages if needed
 
-# Initialize the OCR reader (EasyOCR)
-reader = easyocr.Reader(['ja', 'en'], gpu=False)
-
-# Initialize Google Translator for text translation
+# Initialize Google Translate
 translator = Translator()
 
-# Global variable to store selected region coordinates
+# Global variable to store selected region and monitor
 selected_region = None
-is_dragging = False
-start_point = None
-end_point = None
+primary_monitor = None
 
-# Function to capture mouse events for interactive region selection
-def select_region(event, x, y, flags, param):
-    global is_dragging, start_point, end_point, selected_region
+# Function to capture the screen region from the primary monitor
+def capture_screen():
+    with mss.mss() as sct:
+        while True:
+            if selected_region is not None and primary_monitor is not None:
+                screenshot = sct.grab(primary_monitor)  # Use only the primary monitor
+                screenshot_image = np.array(screenshot)
+                yield screenshot_image
+            time.sleep(0.1)
 
-    if event == cv2.EVENT_LBUTTONDOWN:
-        # Start selecting the region
-        is_dragging = True
-        start_point = (x, y)
-        end_point = (x, y)
-
-    elif event == cv2.EVENT_MOUSEMOVE:
-        # Update the region as the mouse moves
-        if is_dragging:
-            end_point = (x, y)
-            temp_img = np.copy(screenshot_image)  # Create a copy of the image for temporary display
-            cv2.rectangle(temp_img, start_point, end_point, (0, 255, 0), 2)  # Draw rectangle while dragging
-            cv2.imshow("Select Region", temp_img)
-
-    elif event == cv2.EVENT_LBUTTONUP:
-        # Finish selecting the region
-        is_dragging = False
-        end_point = (x, y)
-        selected_region = (start_point[0], start_point[1], end_point[0] - start_point[0], end_point[1] - start_point[1])
-        print(f"Region selected: {selected_region}")
-
-# Function to extract text from the screenshot
+# Function to extract text using EasyOCR
 def extract_text(image):
-    results = reader.readtext(image)
-    texts = [(text, box) for _, text, box in results]  # Texts and their bounding boxes
-    return texts
+    result = reader.readtext(image)
+    return [(text, box) for _, text, box in result]
 
-# Function to detect the language of the text using langdetect
-def detect_language(text):
-    try:
-        language = detect(text)
-        return language
-    except Exception as e:
-        print(f"Error in language detection: {e}")
-        return None
-
-# Function to translate text using Google Translator
+# Function to detect language and translate the detected text (phrase)
 def translate_text(text):
     try:
-        translated = translator.translate(text, src='auto', dest='en')  # Translate to English
-        return translated.text
+        detected_language = detect(text)
+        if detected_language != 'en':  # Translate if the text isn't English
+            translated = translator.translate(text, src='auto', dest='en')
+            return translated.text
+        return text
     except Exception as e:
-        print(f"Error in translation: {e}")
-        return text  # Return original text if there's an error
+        print(f"Error with translation: {e}")
+        return text
 
-# Function to capture and process screen region (runs in a separate thread)
-def capture_and_process():
-    global selected_region
+# Function to overlay translated text on the live view
+def display_overlay(image, text, position=(10, 10)):
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    cv2.putText(image, text, position, font, 1, (0, 255, 0), 2, cv2.LINE_AA)
+    return image
 
+# Function to select a screen region (using OpenCV's ROI tool)
+def select_region():
+    print("Please select a region on the screen...")
+
+    # Capture a screenshot of the primary monitor to display for region selection
     with mss.mss() as sct:
-        while selected_region is None:
-            # Keep displaying the region selection window until the user selects the region
-            cv2.imshow("Select Region", screenshot_image)
-            cv2.waitKey(1)
+        screenshot = sct.grab(primary_monitor)  # Capture the entire screen of the primary monitor
+        screenshot_image = np.array(screenshot)
 
-        # Capture the selected region
-        monitor = {"top": selected_region[1], "left": selected_region[0], "width": selected_region[2], "height": selected_region[3]}
-        while True:
-            screenshot = sct.grab(monitor)
-            screenshot_image = np.array(screenshot)  # Convert to a NumPy array for EasyOCR
+    # Let the user select the region using OpenCV's selectROI
+    region = cv2.selectROI("Select Region", screenshot_image)
+    cv2.destroyWindow("Select Region")
 
-            # Extract texts from the screenshot
-            texts = extract_text(screenshot_image)
+    if region[2] == 0 or region[3] == 0:
+        print("Invalid region selected. Please select a valid region with non-zero width and height.")
+        return select_region()
+    return region
 
-            # Process each text found
-            for text, _ in texts:
+# Function to initialize the primary monitor (hard-coded for 1080p monitor)
+def initialize_primary_monitor():
+    global primary_monitor
+    with mss.mss() as sct:
+        # Check for monitor with 1080p resolution (1920x1080)
+        for monitor in sct.monitors[1:]:
+            if monitor['width'] == 1920 and monitor['height'] == 1080:
+                primary_monitor = monitor
+                print(f"Primary monitor selected: {primary_monitor}")
+                return primary_monitor
+    print("No 1080p monitor found. Selecting the first monitor by default.")
+    primary_monitor = sct.monitors[1]  # Fallback to first monitor
+    return primary_monitor
+
+# Function to process screen and show translations live
+def process_screen():
+    global selected_region
+    initialize_primary_monitor()  # Initialize primary monitor
+    selected_region = select_region()  # Let the user select the capture region
+
+    for screenshot_image in capture_screen():
+        # Extract text from the screen region
+        texts = extract_text(screenshot_image)
+
+        for text, _ in texts:
+            if text.strip():  # Ensure the text isn't empty
                 print(f"Detected text: {text}")
-                detected_language = detect_language(text)
-                if detected_language != 'en':  # If it's not already in English
-                    translated_text = translate_text(text)
-                    print(f"Translated text: {translated_text}")
-                else:
-                    print(f"No translation needed: {text}")
+                translated_text = translate_text(text)
+                print(f"Translated text: {translated_text}")
 
-            time.sleep(1)  # Delay to prevent excessive CPU usage
+                # Display the translated text as overlay
+                screenshot_image = display_overlay(screenshot_image, translated_text)
 
-# Function to initialize the region selection
+        # Display the live view with the overlay
+        cv2.imshow("Live Translation", screenshot_image)
+        cv2.waitKey(1)  # Update frame every loop
+
+# Start the process in a separate thread for real-time updates
 def main():
-    global screenshot_image
-    screenshot = pyautogui.screenshot()
-    screenshot_image = np.array(screenshot)  # Convert screenshot to numpy array for OpenCV
-    screenshot_image = cv2.cvtColor(screenshot_image, cv2.COLOR_RGB2BGR)
-
-    # Display the initial screenshot and allow region selection
-    cv2.imshow("Select Region", screenshot_image)
-    cv2.setMouseCallback("Select Region", select_region)
-
-    # Wait for user to finish selecting the region
-    cv2.waitKey(0)
-    cv2.destroyAllWindows()
-
-    # Start OCR and translation process in a separate thread
-    translation_thread = threading.Thread(target=capture_and_process)
-    translation_thread.daemon = True  # Ensure the thread stops when the main program ends
-    translation_thread.start()
+    # Start the processing function in a separate thread
+    thread = threading.Thread(target=process_screen)
+    thread.daemon = True
+    thread.start()
 
     try:
         while True:
-            time.sleep(1)  # Keep main thread alive
+            time.sleep(1)  # Keep the program running
     except KeyboardInterrupt:
         print("Exiting program...")
 
-# Run the program
 if __name__ == "__main__":
     main()

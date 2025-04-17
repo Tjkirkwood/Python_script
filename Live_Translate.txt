@@ -1,3 +1,11 @@
 On Terminal 
 pip install easyocr mss numpy opencv-python pyautogui langdetect googletrans
 
+
+pip install easyocr
+pip install opencv-python
+pip install mss
+pip install numpy
+pip install pyautogui
+pip install langdetect
+pip install googletrans==4.0.0-rc1
